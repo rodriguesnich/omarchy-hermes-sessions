@@ -391,6 +391,15 @@ Panel {
 
       onMoveRequested: function(dx, dy) {
         if (root.showConfig) return
+        if (dx !== 0) {
+          if (root.profiles.length <= 1) return
+          var idx = root.profiles.indexOf(root.selectedProfile)
+          if (idx === -1) idx = 0
+          var step = dx > 0 ? 1 : -1
+          var newIdx = (idx + step + root.profiles.length) % root.profiles.length
+          root.selectProfile(root.profiles[newIdx])
+          return
+        }
         if (dy === 0 || root.visibleSessions.length === 0) return
         var count = root.visibleSessions.length
         if (dy < 0) {
@@ -633,8 +642,8 @@ Panel {
             PanelSectionHeader {
               width: parent.width
               text: root.visibleSessions.length > 0
-                ? "RECENT SESSIONS · " + root.selectedProfile.toUpperCase() + " · ↵ OPEN · ↑↓ NAVIGATE"
-                : "RECENT SESSIONS · " + root.selectedProfile.toUpperCase()
+                ? "RECENT SESSIONS · " + root.selectedProfile.toUpperCase() + " · ↵ OPEN · ↑↓ SESSÃO · ←→ PERFIL"
+                : "RECENT SESSIONS · " + root.selectedProfile.toUpperCase() + " · ←→ PERFIL"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
