@@ -61,6 +61,8 @@ Panel {
   readonly property var filteredSessions: sessions.filter(function(s){ var prof = s.profile || "default"; return prof === selectedProfile })
   readonly property var visibleSessions: filteredSessions.slice(0, 8)
 
+  property bool useTui: setting("useTui", true) !== false
+
   function refresh() {
     if (snapshotProcess.running) return
     loading = true
@@ -135,6 +137,12 @@ Panel {
     setting("selectedProfile", String(profile))
   }
 
+  function persistUseTui(val) {
+    var t = !!val
+    root.useTui = t
+    setting("useTui", t)
+  }
+
   // Load-on-select: clicking a tab re-runs snapshot.sh scoped to that profile
   // so the list only ever shows sessions of the active tab's DB.
   function selectProfile(profile) {
@@ -159,21 +167,25 @@ Panel {
   function openSession(sessionId, profile) {
     if (!sessionId) return
     var prof = profile || root.selectedProfile
-    console.warn(root.logTag, "openSession requested:", sessionId, "profile:", prof)
+    var useTuiStr = root.useTui ? "1" : "0"
+    console.warn(root.logTag, "openSession requested:", sessionId, "profile:", prof, "useTui:", useTuiStr)
     // Per-session app-id: omarchy-launch-or-focus matches windows by this id,
     // so each session gets (and later re-focuses) its own terminal instead of
     // all clicks landing on whichever session window was opened first.
     var appId = "hermes-tui-" + String(sessionId)
     var args = [scriptPath("hermes-tui-session"), String(sessionId)]
     if (prof) args.push(String(prof))
-    var command = ["omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
+    else args.push("")
+    args.push(useTuiStr)
+    var command = ["env", "HERMES_USE_TUI=" + useTuiStr, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     Quickshell.execDetached(command)
     root.close()
   }
 
   function launchNewSession() {
     var prof = root.selectedProfile
-    console.warn(root.logTag, "launchNewSession requested profile:", prof)
+    var useTuiStr = root.useTui ? "1" : "0"
+    console.warn(root.logTag, "launchNewSession requested profile:", prof, "useTui:", useTuiStr)
     // Unique app-id per click so every new-session request opens a fresh
     // terminal instead of focusing an existing one.
     var appId = "hermes-tui-new-" + Date.now()
@@ -182,7 +194,9 @@ Panel {
     // which would shift the profile into $1 and cause a resume of "kana".
     var args = [scriptPath("hermes-tui-session"), "__new__"]
     if (prof) args.push(String(prof))
-    var command = ["omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
+    else args.push("")
+    args.push(useTuiStr)
+    var command = ["env", "HERMES_USE_TUI=" + useTuiStr, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     Quickshell.execDetached(command)
     root.close()
   }
@@ -506,6 +520,60 @@ Panel {
                   }
                 }
               }
+            }
+          }
+
+          // ---------- Interface toggle (local PR: TUI vs clássico) ----------
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            Text {
+              text: "Interface"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+            Rectangle {
+              width: parent.width
+              height: tuiRow.implicitHeight + Style.space(10)
+              radius: Style.cornerRadius
+              color: root.alpha(root.foreground, 0.05)
+              Row {
+                id: tuiRow
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+                Repeater {
+                  model: [{key:true, label:"TUI"}, {key:false, label:"Clássico"}]
+                  delegate: Rectangle {
+                    required property var modelData
+                    property bool isSel: modelData.key === root.useTui
+                    width: tuiLabel.implicitWidth + Style.space(24)
+                    height: tuiLabel.implicitHeight + Style.space(10)
+                    radius: height/2
+                    color: isSel ? root.accent : "transparent"
+                    Behavior on color { ColorAnimation { duration: 80 } }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.persistUseTui(modelData.key) }
+                    Text {
+                      id: tuiLabel
+                      anchors.centerIn: parent
+                      text: modelData.label
+                      color: isSel ? Color.background : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: isSel
+                    }
+                  }
+                }
+              }
+            }
+            Text {
+              width: parent.width
+              text: root.useTui ? "Abre em TUI (--tui)." : "Abre sem --tui (clássico)."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption - 1 > 9 ? Style.font.caption - 1 : 9
+              wrapMode: Text.WordWrap
             }
           }
 
