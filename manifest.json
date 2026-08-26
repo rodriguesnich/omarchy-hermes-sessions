@@ -21,7 +21,8 @@
       "refreshIntervalSec": 30
     },
     "schema": [
-      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 10, "max": 600, "step": 10, "defaultValue": 30 }
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 10, "max": 600, "step": 10, "defaultValue": 30 },
+      { "key": "selectedProfile", "type": "string", "label": "Default profile", "defaultValue": "default" }
     ]
   }
 }

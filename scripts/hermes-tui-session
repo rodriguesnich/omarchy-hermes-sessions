@@ -1,9 +1,61 @@
 #!/usr/bin/env bash
-# omarchy:summary=Resume a Hermes session in a terminal TUI (companion to the hermes-status bar plugin)
-# omarchy:args=<session-id>
-# Run INSIDE a terminal (omarchy-launch-tui provides one); never spawns a
-# terminal emulator itself. With no argument, starts a fresh Hermes TUI.
-if [[ -z ${1:-} ]]; then
-  exec hermes --tui
+# omarchy:summary=Open a Hermes session in a terminal TUI (companion to the hermes-sessions bar plugin)
+# omarchy:args=<session-id> [profile]
+# Run INSIDE a terminal (omarchy-launch-or-focus-tui provides one); never spawns
+# a terminal emulator itself. Empty session-id starts a fresh Hermes TUI; the
+# optional 2nd arg selects a Hermes profile via `hermes -p <profile>`.
+#
+# Error visibility: failures print the reason and wait for ENTER instead of
+# letting the host terminal close on an invisible error.
+set -u
+
+SESSION_ID="${1:-}"
+PROFILE="${2:-${HERMES_PROFILE:-}}"
+# Sentinel for new-session (Panel.qml passes "__new__" to avoid empty-arg stripping
+# through omarchy-launch-or-focus-tui -> omarchy-launch-tui -> eval).
+if [[ "$SESSION_ID" == "__new__" ]]; then SESSION_ID=""; fi
+# Legacy stripped case: Panel passed "" kana but the launcher chain stripped "" so
+# the call arrived as `hermes-tui-session kana` (profile shifted into $1). Detect
+# single-arg profile-for-new-session and shift it back.
+if [[ -n "$SESSION_ID" && -z "${2:-}" && -z "$PROFILE" ]]; then
+  _san=$(printf %s "$SESSION_ID" | tr -d '\r\n' | head -c 64)
+  if [[ "$_san" =~ ^[a-zA-Z0-9._-]+$ ]] && [[ ! "$SESSION_ID" =~ ^[0-9]{8}_ ]] && [[ ! "$SESSION_ID" =~ ^cron_ ]]; then
+    PROFILE="$_san"
+    SESSION_ID=""
+    PROFILE=$(printf %s "$PROFILE" | tr -d '\r\n' | head -c 64)
+    [[ "$PROFILE" =~ ^[a-zA-Z0-9._-]+$ ]] || PROFILE=""
+  fi
 fi
-exec hermes --tui --resume "$1"
+# Sanitize profile: hostname-safe chars only
+PROFILE=$(printf %s "$PROFILE" | tr -d '\r\n' | head -c 64)
+[[ "$PROFILE" =~ ^[a-zA-Z0-9._-]+$ ]] || PROFILE=""
+
+fail() { # $1 = exit code, rest = message lines
+  local rc="$1"; shift
+  echo ""
+  echo "[hermes-sessions] Failed (exit $rc)"
+  for line in "$@"; do echo "  $line"; done
+  echo "[hermes-sessions] Press ENTER to close..."
+  read -r
+  exit "$rc"
+}
+
+run_local() {
+  local rc
+  "$@"
+  rc=$?
+  [[ $rc -eq 0 ]] || fail "$rc" "cmd : $*"
+  exit 0
+}
+if [[ -z "$SESSION_ID" ]]; then
+  if [[ -n "$PROFILE" && "$PROFILE" != "default" ]]; then
+    run_local hermes -p "$PROFILE" chat --tui
+  else
+    run_local hermes chat --tui
+  fi
+fi
+if [[ -n "$PROFILE" && "$PROFILE" != "default" ]]; then
+  run_local hermes -p "$PROFILE" chat --resume "$SESSION_ID" --tui
+else
+  run_local hermes chat --resume "$SESSION_ID" --tui
+fi

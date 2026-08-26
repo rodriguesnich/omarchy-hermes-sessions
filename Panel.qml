@@ -47,8 +47,19 @@ Panel {
   // the long-lived shell process.
   readonly property int maxSnapshotBytes: 16384
 
-  // The helper caps the query at 8 rows; the panel renders exactly that.
-  readonly property var visibleSessions: sessions.slice(0, 8)
+  // Profiles support (multi-DB): snapshot may contain profiles array and selectedProfile.
+  readonly property var profiles: snapshot ? (snapshot.profiles || ["default"]) : ["default"]
+  property string selectedProfileOverride: ""
+  readonly property string selectedProfile: {
+    if (selectedProfileOverride && profiles.indexOf(selectedProfileOverride) !== -1) return selectedProfileOverride
+    var p = snapshot ? snapshot.selectedProfile : null
+    if (p && profiles.indexOf(p) !== -1) return p
+    var saved = setting("selectedProfile", "")
+    if (saved && profiles.indexOf(saved) !== -1) return saved
+    return profiles[0] || "default"
+  }
+  readonly property var filteredSessions: sessions.filter(function(s){ var prof = s.profile || "default"; return prof === selectedProfile })
+  readonly property var visibleSessions: filteredSessions.slice(0, 8)
 
   function refresh() {
     if (snapshotProcess.running) return
@@ -110,31 +121,68 @@ Panel {
   onOpenedChanged: if (opened) {
     root.cursorActive = false
     root.focusedIndex = 0
-    root.refresh()
+    root.refreshWithProfile(root.selectedProfile)
     if (listFlick) listFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  function openSession(sessionId) {
+  function persistProfile(profile) {
+    if (!profile) return
+    root.selectedProfileOverride = String(profile)
+    // Persist via the shell's settings store. Never write files inside the
+    // plugin directory: the omarchy-shell watcher treats any change there as a
+    // plugin update and hot-reloads the component, which closes open panels.
+    setting("selectedProfile", String(profile))
+  }
+
+  // Load-on-select: clicking a tab re-runs snapshot.sh scoped to that profile
+  // so the list only ever shows sessions of the active tab's DB.
+  function selectProfile(profile) {
+    if (!profile || profile === root.selectedProfile) return
+    root.persistProfile(profile)
+    root.cursorActive = false
+    root.newSessionFocused = false
+    root.focusedIndex = 0
+    if (listFlick) listFlick.contentY = 0
+    root.refreshWithProfile(profile)
+  }
+
+  function refreshWithProfile(profile) {
+    if (snapshotProcess.running) return
+    loading = true
+    var cmd = [scriptPath("snapshot.sh")]
+    if (profile) cmd.push(String(profile))
+    snapshotProcess.command = cmd
+    snapshotProcess.running = true
+  }
+
+  function openSession(sessionId, profile) {
     if (!sessionId) return
-    console.warn(root.logTag, "openSession requested:", sessionId)
+    var prof = profile || root.selectedProfile
+    console.warn(root.logTag, "openSession requested:", sessionId, "profile:", prof)
     // Per-session app-id: omarchy-launch-or-focus matches windows by this id,
     // so each session gets (and later re-focuses) its own terminal instead of
     // all clicks landing on whichever session window was opened first.
     var appId = "hermes-tui-" + String(sessionId)
-    var command = ["omarchy-launch-or-focus-tui", "--app-id=" + appId,
-                   scriptPath("hermes-tui-session"), String(sessionId)]
+    var args = [scriptPath("hermes-tui-session"), String(sessionId)]
+    if (prof) args.push(String(prof))
+    var command = ["omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     Quickshell.execDetached(command)
     root.close()
   }
 
   function launchNewSession() {
-    console.warn(root.logTag, "launchNewSession requested")
+    var prof = root.selectedProfile
+    console.warn(root.logTag, "launchNewSession requested profile:", prof)
     // Unique app-id per click so every new-session request opens a fresh
     // terminal instead of focusing an existing one.
     var appId = "hermes-tui-new-" + Date.now()
-    var command = ["omarchy-launch-or-focus-tui", "--app-id=" + appId,
-                   scriptPath("hermes-tui-session")]
+    // Use sentinel "__new__" instead of "" — empty args are stripped by
+    // omarchy-launch-or-focus-tui -> omarchy-launch-tui -> eval chain,
+    // which would shift the profile into $1 and cause a resume of "kana".
+    var args = [scriptPath("hermes-tui-session"), "__new__"]
+    if (prof) args.push(String(prof))
+    var command = ["omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     Quickshell.execDetached(command)
     root.close()
   }
@@ -183,8 +231,8 @@ Panel {
     return parts.join(" · ")
   }
 
-  // Nothing to show → collapse out of the bar entirely.
-  visible: sessions.length > 0
+  // Keep bar visible when profiles exist even if filteredSessions empty, so user can switch.
+  visible: sessions.length > 0 || profiles.length > 0
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -261,7 +309,7 @@ Panel {
       onActivateRequested: {
         if (root.newSessionFocused) launchNewSession()
         else if (cursorActive && focusedIndex < visibleSessions.length)
-          openSession(visibleSessions[focusedIndex].id)
+          openSession(visibleSessions[focusedIndex].id, visibleSessions[focusedIndex].profile)
         else
           launchNewSession()
       }
@@ -375,7 +423,12 @@ Panel {
 
               Text {
                 width: parent.width - 34
-                text: "New session"
+                // Name the profile this button will open so the user always
+                // knows which TUI a click launches; flips while loading.
+                text: root.loading && root.selectedProfile
+                  ? "Loading " + root.selectedProfile + "…"
+                  : "New session - " + (root.selectedProfile || "")
+                elide: Text.ElideRight
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -394,12 +447,65 @@ Panel {
             }
           }
 
+          // ---------- Profile tabs ----------
+          // Segmented full-width tab bar. Selected chip follows the native
+          // Button selected-state tokens (Style.selectedStateColor /
+          // selectedFillFor) so contrast stays theme-correct; clicking loads
+          // that profile's sessions server-side via selectProfile().
+          Rectangle {
+            visible: root.profiles.length > 1
+            width: parent.width
+            height: tabsRow.implicitHeight + Style.space(12)
+            radius: Style.cornerRadius
+            color: root.alpha(root.foreground, 0.05)
+
+            Row {
+              id: tabsRow
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+
+              Repeater {
+                model: root.profiles
+
+                delegate: Rectangle {
+                  required property var modelData
+                  property bool isSelected: modelData === root.selectedProfile
+                  width: tabLabel.implicitWidth + Style.space(20)
+                  height: tabLabel.implicitHeight + Style.space(10)
+                  radius: height / 2
+                  color: isSelected ? root.accent : "transparent"
+
+                  Behavior on color { ColorAnimation { duration: 80 } }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.selectProfile(modelData)
+                  }
+
+                  Text {
+                    id: tabLabel
+                    anchors.centerIn: parent
+                    text: modelData
+                    textFormat: Text.PlainText
+                    // Text on solid accent must contrast with it — same rule
+                    // the native widgets use between bar background/foreground.
+                    color: isSelected ? Color.background : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: isSelected
+                  }
+                }
+              }
+            }
+          }
+
           // ---------- Recent sessions ----------
           PanelSectionHeader {
             width: parent.width
             text: root.visibleSessions.length > 0
-              ? "RECENT SESSIONS · ↵ OPEN · ↑↓ NAVIGATE"
-              : "RECENT SESSIONS"
+              ? "RECENT SESSIONS · " + root.selectedProfile.toUpperCase() + " · ↵ OPEN · ↑↓ NAVIGATE"
+              : "RECENT SESSIONS · " + root.selectedProfile.toUpperCase()
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
@@ -433,7 +539,7 @@ Panel {
                   root.focusedIndex = index
                 }
 
-                onClicked: root.openSession(modelData.id)
+                onClicked: root.openSession(modelData.id, modelData.profile)
               }
 
               Column {
