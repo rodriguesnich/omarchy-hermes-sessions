@@ -54,9 +54,11 @@ Panel {
   // --- v2 config ---
   property string remoteHost: String(setting("remoteHost", "") || "")
   property string remoteMode: String(setting("remoteMode", "local") || "local") // local | ssh
+  property bool useTui: setting("useTui", true) !== false
   property bool showConfig: false
   property string pendingHost: ""
   property string pendingMode: "local"
+  property bool pendingUseTui: true
   property string testStatus: "" // "", "testing", "ok", "failed"
   property string testMessage: ""
 
@@ -65,12 +67,14 @@ Panel {
     return ""
   }
 
-  function persistRemoteConfig(host, mode) {
+  function persistRemoteConfig(host, mode, useTuiVal) {
     var h = String(host || "").trim()
     var m = (mode === "ssh" ? "ssh" : "local")
+    var t = (useTuiVal !== undefined ? !!useTuiVal : root.useTui)
     // Update local props immediately so UI reflects
     root.remoteHost = h
     root.remoteMode = m
+    root.useTui = t
     // Persist via shell's updateEntryInline (correct API — setting(k,v) is getter only)
     if (bar && bar.shell && bar.shell.updateEntryInline) {
       var s = {}
@@ -78,6 +82,7 @@ Panel {
       if (root.settings) for (var k in root.settings) s[k] = root.settings[k]
       s["remoteHost"] = h
       s["remoteMode"] = m
+      s["useTui"] = t
       s["id"] = root.moduleName
       root.settings = s
       bar.shell.updateEntryInline(root.moduleName, s)
@@ -85,12 +90,14 @@ Panel {
       // fallback (won't persist correctly but keeps runtime)
       setting("remoteHost", h)
       setting("remoteMode", m)
+      setting("useTui", t)
     }
   }
 
   function openConfig() {
     root.pendingHost = String(root.remoteHost)
     root.pendingMode = String(root.remoteMode)
+    root.pendingUseTui = root.useTui
     root.testStatus = ""
     root.testMessage = ""
     root.showConfig = true
@@ -101,7 +108,7 @@ Panel {
   }
   function closeConfig(save) {
     if (save) {
-      root.persistRemoteConfig(root.pendingHost, root.pendingMode)
+      root.persistRemoteConfig(root.pendingHost, root.pendingMode, root.pendingUseTui)
       // refresh after save with new host
       root.refreshWithProfile(root.selectedProfile)
     } else {
@@ -271,15 +278,18 @@ Panel {
     if (!sessionId) return
     var prof = profile || root.selectedProfile
     var host = effectiveRemoteHost()
-    console.warn(root.logTag, "openSession requested:", sessionId, "profile:", prof, "host:", host || "(local)")
+    var useTuiStr = root.useTui ? "1" : "0"
+    console.warn(root.logTag, "openSession requested:", sessionId, "profile:", prof, "host:", host || "(local)", "useTui:", useTuiStr)
     var appId = "hermes-tui-" + String(sessionId)
     var args = [scriptPath("hermes-tui-session"), String(sessionId)]
     if (prof) args.push(String(prof))
+    else args.push("")
+    args.push(useTuiStr)
     var command
     if (host !== "") {
-      command = ["env", "HERMES_REMOTE_HOST=" + host, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
+      command = ["env", "HERMES_REMOTE_HOST=" + host, "HERMES_USE_TUI=" + useTuiStr, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     } else {
-      command = ["env", "HERMES_REMOTE_HOST=", "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
+      command = ["env", "HERMES_REMOTE_HOST=", "HERMES_USE_TUI=" + useTuiStr, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     }
     Quickshell.execDetached(command)
     root.close()
@@ -288,15 +298,18 @@ Panel {
   function launchNewSession() {
     var prof = root.selectedProfile
     var host = effectiveRemoteHost()
-    console.warn(root.logTag, "launchNewSession requested profile:", prof, "host:", host || "(local)")
+    var useTuiStr = root.useTui ? "1" : "0"
+    console.warn(root.logTag, "launchNewSession requested profile:", prof, "host:", host || "(local)", "useTui:", useTuiStr)
     var appId = "hermes-tui-new-" + Date.now()
     var args = [scriptPath("hermes-tui-session"), "__new__"]
     if (prof) args.push(String(prof))
+    else args.push("")
+    args.push(useTuiStr)
     var command
     if (host !== "") {
-      command = ["env", "HERMES_REMOTE_HOST=" + host, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
+      command = ["env", "HERMES_REMOTE_HOST=" + host, "HERMES_USE_TUI=" + useTuiStr, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     } else {
-      command = ["env", "HERMES_REMOTE_HOST=", "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
+      command = ["env", "HERMES_REMOTE_HOST=", "HERMES_USE_TUI=" + useTuiStr, "omarchy-launch-or-focus-tui", "--app-id=" + appId].concat(args)
     }
     Quickshell.execDetached(command)
     root.close()
@@ -812,6 +825,60 @@ Panel {
                     }
                   }
                 }
+              }
+            }
+
+            // Interface toggle (TUI vs clássico)
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                text: "Interface"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Rectangle {
+                width: parent.width
+                height: tuiRow.implicitHeight + Style.space(10)
+                radius: Style.cornerRadius
+                color: root.alpha(root.foreground, 0.05)
+                Row {
+                  id: tuiRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(4)
+                  Repeater {
+                    model: [{key:true, label:"TUI"}, {key:false, label:"Clássico"}]
+                    delegate: Rectangle {
+                      required property var modelData
+                      property bool isSel: modelData.key === root.pendingUseTui
+                      width: tuiLabel.implicitWidth + Style.space(24)
+                      height: tuiLabel.implicitHeight + Style.space(10)
+                      radius: height/2
+                      color: isSel ? root.accent : "transparent"
+                      Behavior on color { ColorAnimation { duration: 80 } }
+                      MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.pendingUseTui = modelData.key }
+                      Text {
+                        id: tuiLabel
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        color: isSel ? Color.background : root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: isSel
+                      }
+                    }
+                  }
+                }
+              }
+              Text {
+                width: parent.width
+                text: root.pendingUseTui ? "Abre sessões em TUI (--tui)." : "Abre sessões sem --tui (clássico)."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption - 1 > 9 ? Style.font.caption - 1 : 9
+                wrapMode: Text.WordWrap
               }
             }
 
